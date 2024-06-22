@@ -2,11 +2,11 @@ import sys
 import json
 import requests
 from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLineEdit, \
-    QPushButton, QLabel, QComboBox, QCheckBox, QSpinBox, QPlainTextEdit
+    QPushButton, QLabel, QComboBox, QCheckBox, QSpinBox, QPlainTextEdit, QGroupBox, QFormLayout, QDoubleSpinBox
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QTextCursor
 
-VERSION = "3.1"
+VERSION = "4.0"
 CONFIG_FILE = "config.json"
 OLLAMA_API_URL = "http://localhost:11434/api"
 
@@ -15,27 +15,48 @@ class OllamaThread(QThread):
     response_received = pyqtSignal(str)
     response_finished = pyqtSignal()
 
-    def __init__(self, model, prompt, context, personality):
+    def __init__(self, model, prompt, context, personality, role, temperature, top_p, top_k):
         super().__init__()
         self.model = model
         self.prompt = prompt
         self.context = context
         self.personality = personality
+        self.role = role
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
 
     def run(self):
         try:
-            system_prompt = f"You are an AI assistant with the following personality and context:\n{self.personality}\n\nPlease respond to the user's messages accordingly."
-            full_prompt = f"{system_prompt}\n\nPrevious conversation:\n{self.context}\n\nHuman: {self.prompt}\nAI:"
-            print(f"Full Prompt: {full_prompt}")  # Debugging output
+            system_prompt = {
+                "role": "system",
+                "content": f"You are a {self.role}. {self.personality} Respond to all messages in character, without breaking the fourth wall or mentioning that you are an AI. Always stay in character."
+            }
+            messages = [system_prompt]
+
+            # Add context messages
+            for message in self.context:
+                if message.startswith("Human: "):
+                    messages.append({"role": "user", "content": message[7:]})
+                elif message.startswith("AI: "):
+                    messages.append({"role": "assistant", "content": message[4:]})
+
+            # Add the current user message
+            messages.append({"role": "user", "content": self.prompt})
+
+            print(f"Full Messages: {messages}")  # Debugging output
+
             response = requests.post(
                 f"{OLLAMA_API_URL}/chat",
                 json={
                     "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"{self.context}\n\nHuman: {self.prompt}"}
-                    ],
-                    "stream": True
+                    "messages": messages,
+                    "stream": True,
+                    "options": {
+                        "temperature": self.temperature,
+                        "top_p": self.top_p,
+                        "top_k": self.top_k
+                    }
                 },
                 stream=True
             )
@@ -58,7 +79,7 @@ class ChatbotUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Ollama Chatbot v{VERSION}")
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 1000, 800)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -73,10 +94,35 @@ class ChatbotUI(QMainWindow):
         model_layout.addWidget(self.model_combo)
         layout.addLayout(model_layout)
 
-        # Personality definition
-        layout.addWidget(QLabel("Personality/Context:"))
+        # Prompt parameters
+        prompt_params_group = QGroupBox("Prompt Parameters")
+        prompt_params_layout = QFormLayout()
+
+        self.role_input = QLineEdit()
+        prompt_params_layout.addRow("Role:", self.role_input)
+
         self.personality_input = QPlainTextEdit()
-        layout.addWidget(self.personality_input)
+        prompt_params_layout.addRow("Personality/Context:", self.personality_input)
+
+        self.temperature_input = QDoubleSpinBox()
+        self.temperature_input.setRange(0.0, 2.0)
+        self.temperature_input.setSingleStep(0.1)
+        self.temperature_input.setValue(0.7)
+        prompt_params_layout.addRow("Temperature:", self.temperature_input)
+
+        self.top_p_input = QDoubleSpinBox()
+        self.top_p_input.setRange(0.0, 1.0)
+        self.top_p_input.setSingleStep(0.1)
+        self.top_p_input.setValue(0.9)
+        prompt_params_layout.addRow("Top P:", self.top_p_input)
+
+        self.top_k_input = QSpinBox()
+        self.top_k_input.setRange(0, 100)
+        self.top_k_input.setValue(40)
+        prompt_params_layout.addRow("Top K:", self.top_k_input)
+
+        prompt_params_group.setLayout(prompt_params_layout)
+        layout.addWidget(prompt_params_group)
 
         # Chat log
         self.chat_log = QTextEdit()
@@ -159,9 +205,22 @@ class ChatbotUI(QMainWindow):
         self.chat_log.append(f"<b>You:</b> {user_input}")
         self.input_field.clear()
 
-        context = "\n".join(self.chat_history)
         personality = self.personality_input.toPlainText().strip()
-        self.ollama_thread = OllamaThread(self.model_combo.currentText(), user_input, context, personality)
+        role = self.role_input.text().strip()
+        temperature = self.temperature_input.value()
+        top_p = self.top_p_input.value()
+        top_k = self.top_k_input.value()
+
+        self.ollama_thread = OllamaThread(
+            self.model_combo.currentText(),
+            user_input,
+            self.chat_history,
+            personality,
+            role,
+            temperature,
+            top_p,
+            top_k
+        )
         self.ollama_thread.response_received.connect(self.handle_response_chunk)
         self.ollama_thread.response_finished.connect(self.handle_response_finished)
         self.current_response = ""
@@ -170,10 +229,11 @@ class ChatbotUI(QMainWindow):
 
     def handle_response_chunk(self, chunk):
         self.current_response += chunk
-        self.chat_log.moveCursor(QTextCursor.MoveOperation.End)
-        self.chat_log.insertPlainText(chunk)
-        self.chat_log.moveCursor(QTextCursor.MoveOperation.End)
-        self.chat_log.verticalScrollBar().setValue(self.chat_log.verticalScrollBar().maximum())
+        cursor = self.chat_log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(chunk)
+        self.chat_log.setTextCursor(cursor)
+        self.chat_log.ensureCursorVisible()
 
     def handle_response_finished(self):
         self.chat_log.append("")  # Add a newline after the complete response
@@ -195,7 +255,6 @@ class ChatbotUI(QMainWindow):
     def clear_history(self):
         self.chat_history = []
         self.chat_log.clear()
-        self.personality_input.clear()
         self.save_config()
 
     def load_config(self):
@@ -208,7 +267,11 @@ class ChatbotUI(QMainWindow):
                 self.chat_history = config.get("chat_history", [])
                 self.max_history_length = config.get("max_history_length", 10)
                 self.history_length_spinbox.setValue(self.max_history_length)
+                self.role_input.setText(config.get("role", ""))
                 self.personality_input.setPlainText(config.get("personality", ""))
+                self.temperature_input.setValue(config.get("temperature", 0.7))
+                self.top_p_input.setValue(config.get("top_p", 0.9))
+                self.top_k_input.setValue(config.get("top_k", 40))
                 # Ensure chat history doesn't exceed the maximum length
                 self.chat_history = self.chat_history[-(self.max_history_length * 2):]
         except FileNotFoundError:
@@ -224,7 +287,11 @@ class ChatbotUI(QMainWindow):
                 "persistence": self.persistence_checkbox.isChecked(),
                 "chat_history": self.chat_history,
                 "max_history_length": self.max_history_length,
-                "personality": self.personality_input.toPlainText().strip()
+                "role": self.role_input.text(),
+                "personality": self.personality_input.toPlainText(),
+                "temperature": self.temperature_input.value(),
+                "top_p": self.top_p_input.value(),
+                "top_k": self.top_k_input.value()
             }
             with open(CONFIG_FILE, "w") as file:
                 json.dump(config, file, indent=4)
