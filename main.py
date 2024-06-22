@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHB
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QTextCursor
 
-VERSION = "4.0"
+VERSION = "4.2"
 CONFIG_FILE = "config.json"
 OLLAMA_API_URL = "http://localhost:11434/api"
 
@@ -15,7 +15,7 @@ class OllamaThread(QThread):
     response_received = pyqtSignal(str)
     response_finished = pyqtSignal()
 
-    def __init__(self, model, prompt, context, personality, role, temperature, top_p, top_k):
+    def __init__(self, model, prompt, context, personality, role, temperature, top_p, top_k, max_tokens):
         super().__init__()
         self.model = model
         self.prompt = prompt
@@ -25,6 +25,7 @@ class OllamaThread(QThread):
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
+        self.max_tokens = max_tokens
 
     def run(self):
         try:
@@ -55,7 +56,8 @@ class OllamaThread(QThread):
                     "options": {
                         "temperature": self.temperature,
                         "top_p": self.top_p,
-                        "top_k": self.top_k
+                        "top_k": self.top_k,
+                        "max_tokens": self.max_tokens  # Set max tokens for response length
                     }
                 },
                 stream=True
@@ -120,6 +122,11 @@ class ChatbotUI(QMainWindow):
         self.top_k_input.setRange(0, 100)
         self.top_k_input.setValue(40)
         prompt_params_layout.addRow("Top K:", self.top_k_input)
+
+        self.max_tokens_input = QSpinBox()
+        self.max_tokens_input.setRange(50, 2000)
+        self.max_tokens_input.setValue(500)
+        prompt_params_layout.addRow("Max Tokens:", self.max_tokens_input)
 
         prompt_params_group.setLayout(prompt_params_layout)
         layout.addWidget(prompt_params_group)
@@ -210,6 +217,7 @@ class ChatbotUI(QMainWindow):
         temperature = self.temperature_input.value()
         top_p = self.top_p_input.value()
         top_k = self.top_k_input.value()
+        max_tokens = self.max_tokens_input.value()
 
         self.ollama_thread = OllamaThread(
             self.model_combo.currentText(),
@@ -219,7 +227,8 @@ class ChatbotUI(QMainWindow):
             role,
             temperature,
             top_p,
-            top_k
+            top_k,
+            max_tokens
         )
         self.ollama_thread.response_received.connect(self.handle_response_chunk)
         self.ollama_thread.response_finished.connect(self.handle_response_finished)
@@ -272,6 +281,7 @@ class ChatbotUI(QMainWindow):
                 self.temperature_input.setValue(config.get("temperature", 0.7))
                 self.top_p_input.setValue(config.get("top_p", 0.9))
                 self.top_k_input.setValue(config.get("top_k", 40))
+                self.max_tokens_input.setValue(config.get("max_tokens", 500))
                 # Ensure chat history doesn't exceed the maximum length
                 self.chat_history = self.chat_history[-(self.max_history_length * 2):]
         except FileNotFoundError:
@@ -291,7 +301,8 @@ class ChatbotUI(QMainWindow):
                 "personality": self.personality_input.toPlainText(),
                 "temperature": self.temperature_input.value(),
                 "top_p": self.top_p_input.value(),
-                "top_k": self.top_k_input.value()
+                "top_k": self.top_k_input.value(),
+                "max_tokens": self.max_tokens_input.value()
             }
             with open(CONFIG_FILE, "w") as file:
                 json.dump(config, file, indent=4)
