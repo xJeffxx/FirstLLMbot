@@ -4,14 +4,16 @@ import requests
 from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLineEdit, \
     QPushButton, QLabel, QComboBox, QCheckBox, QSpinBox, QPlainTextEdit
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QTextCursor
 
-VERSION = "2.2"
+VERSION = "3.1"
 CONFIG_FILE = "config.json"
 OLLAMA_API_URL = "http://localhost:11434/api"
 
 
 class OllamaThread(QThread):
     response_received = pyqtSignal(str)
+    response_finished = pyqtSignal()
 
     def __init__(self, model, prompt, context, personality):
         super().__init__()
@@ -22,28 +24,34 @@ class OllamaThread(QThread):
 
     def run(self):
         try:
-            full_prompt = f"{self.personality}\n{self.context}\nHuman: {self.prompt}\nAI:"
+            system_prompt = f"You are an AI assistant with the following personality and context:\n{self.personality}\n\nPlease respond to the user's messages accordingly."
+            full_prompt = f"{system_prompt}\n\nPrevious conversation:\n{self.context}\n\nHuman: {self.prompt}\nAI:"
             print(f"Full Prompt: {full_prompt}")  # Debugging output
             response = requests.post(
-                f"{OLLAMA_API_URL}/generate",
-                json={"model": self.model, "prompt": full_prompt},
+                f"{OLLAMA_API_URL}/chat",
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"{self.context}\n\nHuman: {self.prompt}"}
+                    ],
+                    "stream": True
+                },
                 stream=True
             )
             response.raise_for_status()
-            full_response = ""
             for line in response.iter_lines():
                 if line:
-                    data = json.loads(line)
-                    if 'response' in data:
-                        full_response += data['response']
-            if not full_response:
-                self.response_received.emit("No response received from the model.")
-            else:
-                self.response_received.emit(full_response)
+                    try:
+                        data = json.loads(line)
+                        if 'message' in data and 'content' in data['message']:
+                            self.response_received.emit(data['message']['content'])
+                    except json.JSONDecodeError:
+                        print(f"Error decoding JSON: {line}")
+            self.response_finished.emit()
         except requests.RequestException as e:
             self.response_received.emit(f"Error: {str(e)}")
-        except json.JSONDecodeError as e:
-            self.response_received.emit(f"Error decoding JSON: {str(e)}")
+            self.response_finished.emit()
 
 
 class ChatbotUI(QMainWindow):
@@ -110,6 +118,7 @@ class ChatbotUI(QMainWindow):
 
         self.chat_history = []
         self.max_history_length = 10
+        self.current_response = ""
         self.load_config()
         self.update_model_params()
 
@@ -133,8 +142,8 @@ class ChatbotUI(QMainWindow):
             self.params_label.setText(f"Model Parameters:\n{readable_params}")
         except requests.RequestException:
             self.params_label.setText("Error fetching model parameters")
-        except json.JSONDecodeError as e:
-            self.params_label.setText(f"Error decoding JSON: {str(e)}")
+        except json.JSONDecodeError:
+            self.params_label.setText("Error decoding JSON")
 
     def make_params_readable(self, params):
         readable = ""
@@ -153,16 +162,25 @@ class ChatbotUI(QMainWindow):
         context = "\n".join(self.chat_history)
         personality = self.personality_input.toPlainText().strip()
         self.ollama_thread = OllamaThread(self.model_combo.currentText(), user_input, context, personality)
-        self.ollama_thread.response_received.connect(self.handle_response)
+        self.ollama_thread.response_received.connect(self.handle_response_chunk)
+        self.ollama_thread.response_finished.connect(self.handle_response_finished)
+        self.current_response = ""
+        self.chat_log.append("<b>Bot:</b> ")
         self.ollama_thread.start()
 
-    def handle_response(self, response):
-        self.chat_log.append(f"\n<b>Bot:</b> {response}")
+    def handle_response_chunk(self, chunk):
+        self.current_response += chunk
+        self.chat_log.moveCursor(QTextCursor.MoveOperation.End)
+        self.chat_log.insertPlainText(chunk)
+        self.chat_log.moveCursor(QTextCursor.MoveOperation.End)
         self.chat_log.verticalScrollBar().setValue(self.chat_log.verticalScrollBar().maximum())
+
+    def handle_response_finished(self):
+        self.chat_log.append("")  # Add a newline after the complete response
 
         # Update chat history
         self.chat_history.append(f"Human: {self.input_field.text()}")
-        self.chat_history.append(f"AI: {response}")
+        self.chat_history.append(f"AI: {self.current_response}")
 
         # Limit chat history length
         if len(self.chat_history) > self.max_history_length * 2:  # *2 because each exchange is 2 messages
