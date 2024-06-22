@@ -76,9 +76,6 @@ This project was developed using an AI-augmented coding workflow, leveraging the
 
 Contributions are welcome! Please feel free to submit a pull request or open an issue if you have any suggestions or improvements.
 
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ---
 
